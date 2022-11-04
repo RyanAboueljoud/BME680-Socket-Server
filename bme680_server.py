@@ -58,7 +58,7 @@ print()
 addr = socket.getaddrinfo('0.0.0.0', 80)[0][-1]
 s = socket.socket()
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.settimeout(30.0)
+s.settimeout(15.0)
 s.bind(addr)
 s.listen(3)
 
@@ -70,31 +70,47 @@ get_media_req = False
 # Networking initialized, start listening for connections
 print ('Listening for connections...')
 while True:
-    cl, addr = s.accept()
-    cl_file = cl.makefile('rwb', 0)
-    led.on()
-    recv_buf = cl_file.readline()
+    # Listen for new connection request
+    try:
+        # print(wlan.status(), network.STAT_IDLE)  # DEBUG
+        cl, addr = s.accept()
+        cl_file = cl.makefile('rwb', 0)
+        led.on()
+        recv_buf = cl_file.readline()
+    except OSError as e:
+        print(e)
+        recv_buf=""
+        response=""
+        get_media_req = False
+        led.off()
+        try:
+            cl.close()
+        except NameError as e:
+            print(e)
+        time.sleep_ms(100)
+        continue
+    
     # Check buffer header for media or webpage request
-    if not contains_word(recv_buf, b'/') and recv_buf is not None:
-            try:
-                if len(recv_buf) > 1:
-                    request = recv_buf.split()[1].decode('ascii')
-                    print(f'Retrieving {request}')
-                    with open(str(request), "rb") as f:
-                        response = f.read()
-                    get_media_req = True
-            except OSError as e:
-                print(e)
-                get_media_req = False
+    if not contains_word(recv_buf, b'/') and len(recv_buf) > 1:
+        try:
+            request = recv_buf.split()[1].decode('ascii')
+            print(f'Retrieving {request}')
+            with open(str(request), "rb") as f:
+                response = f.read()
+            get_media_req = True
+        except OSError as e:
+            print(e)
+            get_media_req = False
     while True:
         # print(recv_buf)    # DEBUG
-        recv_buf = cl_file.readline()
-        if not recv_buf or recv_buf == b'\r\n':
+        if not recv_buf or recv_buf == b'\r\n' or len(recv_buf) == 0:
            break
+        else:
+            recv_buf = cl_file.readline()       
     led.off()
     
     if not get_media_req:
-        led.on()
+        #led.on()
         temperature = round(bme.temperature, 2)
         temperature_f = round(((bme.temperature * 9/5) + 32), 2)
         humid = round(bme.humidity, 2)
@@ -188,12 +204,12 @@ while True:
         hours = round((seconds / 3600), 4)
         response += f'</div></div><br>Runtime: {hours} hour(s)</div>'+'\r\n'
         response += '</body></html>'+'\r\n'
-        led.off()
+        #led.off()
 
     try:
         led.on()
         if not get_media_req:    # Toggle response type between html and favicon
-            cl.send('HTTP/1.1 200 OK\r\nContent-type: text/html\r\n\r\n')
+            cl.send('HTTP/1.1 200 OK\r\nContent-type: text/html\r\nCache-Control: max-age=15\r\n\r\n')
             cl.send(response)
         else:
             print(f'Sending {request}')
@@ -215,4 +231,5 @@ while True:
     led.off()
     recv_buf="" # Reset buffer
     response="" # Reset response
-    print ('Listening for connections...\n')
+    time.sleep_ms(100)
+    print ('\nListening for connections...\n')
