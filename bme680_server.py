@@ -8,13 +8,11 @@ a graphical html web page.
 
 import uos
 from machine import Pin, I2C
-
 import wlan_setup
 from bme680 import *
 import socket
 import time
 import math
-
 import ntp_client as ntp
 
 
@@ -23,21 +21,41 @@ def contains_word(st, wd):
     return (b' ' + wd + b' ') in (b' ' + st + b' ')
 
 
+# Function convert second into day
+# hours, minutes and seconds
+def seconds_to_time(n):
+    day = n // (24 * 3600)
+
+    n = n % (24 * 3600)
+    hour = n // 3600
+
+    n %= 3600
+    minutes = n // 60
+
+    n %= 60
+    seconds = n
+
+    return [seconds, minutes, hour, day]
+
+
 # Initialize global variables
-days = 0    # Counter for days of runtime, Pico W resets system time every 24H
+get_media_req = False       # Toggle var for switch between html and media transfer
+days = 0                    # Counter for days of runtime, Pico W resets system time every 24H
 led = Pin("LED", Pin.OUT)   # activity led
-recv_buf = ""   # Socket receive buffer
+request  = ''               # Request buffer
+response = ''               # Response buffer
+recv_buf = ''               # Socket receive buffer
 fieldnames = ['date', 'time', 'Temp_C', 'Temp_F', 'Humidity', 'Pressure', 'Gas', 'AQI']     # CSV
-min_temp    = 10000.0
-min_humid   = 10000.0
-min_press   = 10000.0
-min_gas     = 10000.0
-min_aqi     = 10000.0
-max_temp    = 0.0
-max_humid   = 0.0
-max_press   = 0.0
-max_gas     = 0.0
-max_aqi     = 0.0
+min_temp    = 99999.9
+min_humid   = 99999.9
+min_press   = 99999.9
+min_gas     = 99999.9
+min_aqi     = 99999.9
+max_temp    = -1.0
+max_humid   = -1.0
+max_press   = -1.0
+max_gas     = -1.0
+max_aqi     = -1.0
 
 led.on()
 
@@ -57,6 +75,7 @@ wlan_setup.connect()
 ntp.setup()
 start_timestamp = time.mktime(time.localtime())     # Program start time
 csv_sample = start_timestamp
+download_token = start_timestamp
 
 # Initialize listen socket
 addr = socket.getaddrinfo('0.0.0.0', 80)[0][-1]
@@ -67,14 +86,6 @@ s.bind(addr)
 s.listen(3)
 
 led.off()
-
-# Toggle variable for switch between html and media transfer
-get_media_req = False
-
-download_token = time.mktime(time.localtime())
-request = ''
-response = ''
-recv_buf = ''
 
 # Networking initialized, start listening for connections
 print('Listening for connections...')
@@ -115,7 +126,7 @@ while True:
             recv_buf = cl_file.readline()       
     led.off()
 
-    # Get current time and date
+    # Update current date and time
     year, month, mday, hour, minute, second, weekday, yearday = time.localtime()
     for x in range(8):   # Convert UTC time to Pacific Timezone (UTC-08:00)
         if hour < 1:
@@ -124,104 +135,109 @@ while True:
     date = f'{mday}-{month}-{year}'
     time_now = f'{hour}:{minute}:{second}'
     now = time.mktime(time.localtime())
+    runtime = seconds_to_time((now-start_timestamp))
 
-    if not get_media_req:
-        for x in range(3):  # Warm up sensor before reporting readings
-            temperature = round(bme.temperature, 2)
-            temperature_f = round(((bme.temperature * 9/5) + 32), 2)
-            humid = round(bme.humidity, 2)
-            press = round(bme.pressure, 2)
-            gas = round(bme.gas/1000, 2)
-            aqi = round((math.log(round(bme.gas/1000, 2))+0.04*round(bme.humidity, 2)), 2)
-            time.sleep_us(10)
-        temperature_str = str(temperature) + ' C'
-        temperature_f_str = str(temperature_f) + ' F'
-        humidity_str = str(humid) + ' %'
-        pressure_str = str(press) + ' hPa'
-        gas_str = str(gas) + ' KOhms'
-        aqi_str = str(aqi)
-        print (f'\nIncoming connection --> sending webpage')
-        print('Temperature:', temperature_str)
-        print('Humidity:', humidity_str)
-        print('Pressure:', pressure_str)
-        print('Gas:', gas_str)
-        print('AQI:', aqi_str)
-        print('-------\n')
+    # Update sensor readings
+    for x in range(3):  # Warm up sensor before reporting readings
+        temperature = round(bme.temperature, 2)
+        temperature_f = round(((bme.temperature * 9 / 5) + 32), 2)
+        humid = round(bme.humidity, 2)
+        press = round(bme.pressure, 2)
+        gas = round(bme.gas / 1000, 2)
+        aqi = round((math.log(round(bme.gas / 1000, 2)) + 0.04 * round(bme.humidity, 2)), 2)
+        time.sleep_us(10)
+    temperature_str = str(temperature) + ' C'
+    temperature_f_str = str(temperature_f) + ' F'
+    humidity_str = str(humid) + ' %'
+    pressure_str = str(press) + ' hPa'
+    gas_str = str(gas) + ' KOhms'
+    aqi_str = str(aqi)
+    print(f'\nIncoming connection --> sending webpage')
+    print('Temperature:', temperature_str)
+    print('Humidity:', humidity_str)
+    print('Pressure:', pressure_str)
+    print('Gas:', gas_str)
+    print('AQI:', aqi_str)
+    print('-------\n')
 
-        if (now - csv_sample) > 3600:   # Record sensor readings at least every hour
-            print("Writing sensor values to csv...")
-            rows = [
-                date,
-                time_now,
-                temperature,
-                temperature_f,
-                humid,
-                press,
-                gas,
-                aqi
-            ]
+    # Record sensor readings at least every hour
+    if (now - csv_sample) > 3600:
+        print("Writing sensor values to csv...")
+        rows = [
+            date,
+            time_now,
+            temperature,
+            temperature_f,
+            humid,
+            press,
+            gas,
+            aqi
+        ]
 
-            # Check for existing stats.csv file, create a new one if not found
+        # Check for existing stats.csv file, create a new one if not found
+        try:
+            f = open('stats.csv', 'r')
+        except OSError as e:
+            print(f'CSV may not exist: {e}')
+            print('Creating new csv...')
             try:
-                f = open('stats.csv', 'r')
-            except OSError as e:
-                print(f'CSV may not exist: {e}')
-                print('Creating new csv...')
-                try:
-                    with open('stats.csv', 'w') as f:
-                        for x in fieldnames:
-                            f.write(x)
-                            if x == fieldnames[-1]:
-                                f.write('\r\n')
-                            else:
-                                f.write(',')
-                except TypeError as e:
-                    print(f'TypeError writing headers to csv: {e}')
-                except NameError as e:
-                    print(e)
-            finally:
-                try:
-                    f.close()
-                except OSError as e:
-                    print(f'CSV may not exist: {e}')
-
-            # Append sensor readings to csv
-            try:
-                with open('stats.csv', 'a') as f:
-                    for x in rows:
-                        f.write(str(x))
-                        if x == rows[-1]:
+                with open('stats.csv', 'w') as f:
+                    for x in fieldnames:
+                        f.write(x)
+                        if x == fieldnames[-1]:
                             f.write('\r\n')
                         else:
                             f.write(',')
-                csv_sample = time.mktime(time.localtime())
-                print("Done.")
             except TypeError as e:
-                print(f'TypeError appending to csv: {e}')
+                print(f'TypeError writing headers to csv: {e}')
             except NameError as e:
-                print(f'NameError appending to csv: {e}')
+                print(e)
+        finally:
+            try:
+                f.close()
+            except OSError as e:
+                print(f'CSV may not exist: {e}')
 
-        # Set min/max
-        if temperature_f < min_temp:    # min
-            min_temp = temperature_f
-        if humid < min_humid:
-            min_humid = humid
-        if press < min_press:
-            min_press = press
-        if gas < min_gas:
-            min_gas = gas
-        if aqi < min_aqi:
-            min_aqi = aqi
-        if temperature_f > max_temp:    # max
-            max_temp = temperature_f
-        if humid > max_humid:
-            max_humid = humid
-        if press > max_press:
-            max_press = press
-        if gas > max_gas:
-            max_gas = gas
-        if aqi > max_aqi:
-            max_aqi = aqi
+        # Append sensor readings to csv
+        try:
+            with open('stats.csv', 'a') as f:
+                for x in rows:
+                    f.write(str(x))
+                    if x == rows[-1]:
+                        f.write('\r\n')
+                    else:
+                        f.write(',')
+            csv_sample = now
+            print("Done.")
+        except TypeError as e:
+            print(f'TypeError appending to csv: {e}')
+        except NameError as e:
+            print(f'NameError appending to csv: {e}')
+
+    # Set min/max
+    if temperature_f < min_temp:  # min
+        min_temp = temperature_f
+    if humid < min_humid:
+        min_humid = humid
+    if press < min_press:
+        min_press = press
+    if gas < min_gas:
+        min_gas = gas
+    if aqi < min_aqi:
+        min_aqi = aqi
+    if temperature_f > max_temp:  # max
+        max_temp = temperature_f
+    if humid > max_humid:
+        max_humid = humid
+    if press > max_press:
+        max_press = press
+    if gas > max_gas:
+        max_gas = gas
+    if aqi > max_aqi:
+        max_aqi = aqi
+
+    if not get_media_req:
+        download_token = now  # Refresh download token to avoid stale download cache
 
         response =  '<!DOCTYPE HTML>'+'\r\n'
         response += '<html><head>'+'\r\n'
@@ -231,7 +247,7 @@ while True:
         response += '<link rel="icon" type="image/png" sizes="16x16" href="/img/favicon-16x16.png">\r\n'
         response += '<link rel="manifest" href="/img/site.webmanifest">\r\n'
         response += '<link rel="mask-icon" href="/img/safari-pinned-tab.svg" color="#5bbad5">\r\n'
-        response += '<link rel="shortcut icon" type="image/x-icon" href="favicon.ico">\r\n'
+        response += '<link rel="shortcut icon" type="image/x-icon" href="/img/favicon.ico">\r\n'
         response += '<meta name="msapplication-TileColor" content="#da532c">\r\n'
         response += '<meta name="msapplication-config" content="/img/browserconfig.xml">\r\n'
         response += '<meta name="theme-color" content="#ffffff">\r\n'
@@ -273,19 +289,14 @@ while True:
         response += '</div>'+'\r\n'
         response += '<div class=\"card pressure\">' + '\r\n'
         response += '<h4>PRESSURE</h4><p><span class=\"reading\">' + pressure_str + f'<br><h4>min: {min_press} max: {max_press}</h4></p>' + '\r\n'
-        seconds = (time.time() - start_timestamp) % (24 * 3600)     # Pico W will refresh count every 24 hours
-        hours = round((seconds / 3600), 4)
-        if hours > 23.0000:     # NEED TO FIX - Multiple refreshes at midnight will result in multiple day increments
-            days += 1
-        download_token = now  # Refresh download token to avoid stale download cache
-        response += f'</div></div><br><a href="stats.csv?token{download_token}" class="downloadButton">Download</a><br><br>{month}-{mday}-{year} {(hour-12) if hour > 12 else hour }:{minute}:{second}<br>Runtime: {days} day(s) {hours} hour(s)<br><br><br><br><a href="delete.html" class="deleteButton">Delete</a></div>'+'\r\n'
+        response += f'</div></div><br><a href="stats.csv?token{download_token}" class="downloadButton">Download</a><br><br>{month}-{mday}-{year} {(hour-12) if hour > 12 else hour }:{minute}:{second}<br>Runtime: {int(runtime[3])} days {int(runtime[2])} hours {int(runtime[1])} minutes {int(runtime[0])} seconds<br><br><br><br><a href="delete.html" class="deleteButton">Delete</a></div>'+'\r\n'
         response += '</body></html>'+'\r\n\r\n'
 
     try:
         led.on()
         content_type = 'text/html'  # Default html
-        max_age = 604800
-        if not get_media_req:    # Toggle response type between html and favicon
+        max_age = 604800            # Default cache age
+        if not get_media_req:       # Toggle response type between html and favicon
             cl.send('HTTP/1.1 200 OK\r\nContent-type: text/html\r\nCache-Control: max-age=60\r\n\r\n')
             cl.send(response)
         else:
