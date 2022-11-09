@@ -10,7 +10,8 @@ import struct
 
 from machine import Pin, RTC
 
-NTP_DELTA = 2208988800
+pt_gmtoffset = 28800    # Convert UTC time to Pacific Timezone (UTC-08:00)
+NTP_DELTA = 2208988800 + pt_gmtoffset
 host = "pool.ntp.org"
 
 led = Pin("LED", Pin.OUT)

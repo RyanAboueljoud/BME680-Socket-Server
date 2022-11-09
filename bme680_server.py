@@ -11,9 +11,31 @@ from machine import Pin, I2C
 import wlan_setup
 from bme680 import *
 import socket
+import select
 import time
 import math
 import ntp_client as ntp
+
+# Initialize global variables
+get_media_req = False       # Toggle var for switch between html and media transfer
+days = 0                    # Counter for days of runtime, Pico W resets system time every 24H
+led = Pin("LED", Pin.OUT)   # activity led
+request  = ''               # Request buffer
+response = ''               # Response buffer
+recv_buf = ''               # Socket receive buffer
+cl   = None
+addr = None
+fieldnames = ['date', 'time', 'Temp_C', 'Temp_F', 'Humidity', 'Pressure', 'Gas', 'AQI']     # CSV
+min_temp    = 99999.9
+min_humid   = 99999.9
+min_press   = 99999.9
+min_gas     = 99999.9
+min_aqi     = 99999.9
+max_temp    = -1.0
+max_humid   = -1.0
+max_press   = -1.0
+max_gas     = -1.0
+max_aqi     = -1.0
 
 
 # Check string for whole word using space as delimiter 
@@ -38,24 +60,47 @@ def seconds_to_time(n):
     return [seconds, minutes, hour, day]
 
 
-# Initialize global variables
-get_media_req = False       # Toggle var for switch between html and media transfer
-days = 0                    # Counter for days of runtime, Pico W resets system time every 24H
-led = Pin("LED", Pin.OUT)   # activity led
-request  = ''               # Request buffer
-response = ''               # Response buffer
-recv_buf = ''               # Socket receive buffer
-fieldnames = ['date', 'time', 'Temp_C', 'Temp_F', 'Humidity', 'Pressure', 'Gas', 'AQI']     # CSV
-min_temp    = 99999.9
-min_humid   = 99999.9
-min_press   = 99999.9
-min_gas     = 99999.9
-min_aqi     = 99999.9
-max_temp    = -1.0
-max_humid   = -1.0
-max_press   = -1.0
-max_gas     = -1.0
-max_aqi     = -1.0
+def write_to_csv(fieldnames, rows):
+    # Check for existing stats.csv file, create a new one if not found
+    try:
+        f = open('stats.csv', 'r')
+    except OSError as e:
+        print(f'CSV may not exist: {e}')
+        print('Creating new csv...')
+        try:
+            with open('stats.csv', 'w') as f:
+                for x in fieldnames:
+                    f.write(x)
+                    if x == fieldnames[-1]:
+                        f.write('\r\n')
+                    else:
+                        f.write(',')
+        except TypeError as e:
+            print(f'TypeError writing headers to csv: {e}')
+        except NameError as e:
+            print(e)
+    finally:
+        try:
+            f.close()
+        except OSError as e:
+            print(f'CSV may not exist: {e}')
+
+    # Append sensor readings to csv
+    try:
+        with open('stats.csv', 'a') as f:
+            for x in rows:
+                f.write(str(x))
+                if x == rows[-1]:
+                    f.write('\r\n')
+                else:
+                    f.write(',')
+        csv_sample = now
+        print("Done.")
+    except TypeError as e:
+        print(f'TypeError appending to csv: {e}')
+    except NameError as e:
+        print(f'NameError appending to csv: {e}')
+
 
 led.on()
 
@@ -87,19 +132,57 @@ s.listen(3)
 
 led.off()
 
+# TEST
+poller = select.poll()
+poller.register(s, select.POLLIN)
+
 # Networking initialized, start listening for connections
 print('Listening for connections...')
 while True:
-    # Listen for new connection request
+    # Poll for new connection request
     try:
-        # print(wlan.status(), network.STAT_IDLE)  # DEBUG
-        cl, addr = s.accept()
-        led.on()
-        cl_file = cl.makefile('rwb', 0)
-        recv_buf = cl_file.readline()
+        evts = poller.poll(1000)  # Poll for 7 min (420000ms)
+        for sock, evt in evts:
+            if evt and select.POLLIN:
+                    led.on()
+                    cl, addr = s.accept()
+                    cl_file = cl.makefile('rwb', 0)
+                    recv_buf = cl_file.readline()
+        if len(evts) < 1:   # No connection request
+            now = time.mktime(time.localtime())
+            if (now - csv_sample) > 3600:
+                # Update current date and time
+                year, month, mday, hour, minute, second, weekday, yearday = time.localtime()
+                date = f'{mday}-{month}-{year}'
+                time_now = f'{hour}:{minute}:{second}'
+                runtime = seconds_to_time((now - start_timestamp))
+
+                for x in range(5):  # Warm up sensor before reporting readings
+                    temperature = round(bme.temperature, 2)
+                    temperature_f = round(((bme.temperature * 9 / 5) + 32), 2)
+                    humid = round(bme.humidity, 2)
+                    press = round(bme.pressure, 2)
+                    gas = round(bme.gas / 1000, 2)
+                    aqi = round((math.log(round(bme.gas / 1000, 2)) + 0.04 * round(bme.humidity, 2)), 2)
+                    time.sleep_us(10)
+
+                print("Writing sensor values to csv...")
+                rows = [
+                    date,
+                    time_now,
+                    temperature,
+                    temperature_f,
+                    humid,
+                    press,
+                    gas,
+                    aqi
+                ]
+                write_to_csv(fieldnames, rows)
+                csv_sample = now
+            continue
     except OSError as e:
         print(f'Error Receiving Request: {e}')
-        recv_buf = ""
+        recv_buf = ''
         led.off()
         try:
             cl.close()
@@ -107,7 +190,7 @@ while True:
             print(e)
         time.sleep_ms(10)
         continue
-    
+
     # Check buffer header for media or webpage request
     if not contains_word(recv_buf, b'/') and len(recv_buf) > 1:
         try:
@@ -128,115 +211,57 @@ while True:
 
     # Update current date and time
     year, month, mday, hour, minute, second, weekday, yearday = time.localtime()
-    for x in range(8):   # Convert UTC time to Pacific Timezone (UTC-08:00)
-        if hour < 1:
-            hour = 12
-        hour -= 1
     date = f'{mday}-{month}-{year}'
     time_now = f'{hour}:{minute}:{second}'
     now = time.mktime(time.localtime())
     runtime = seconds_to_time((now-start_timestamp))
 
-    # Update sensor readings
-    for x in range(3):  # Warm up sensor before reporting readings
-        temperature = round(bme.temperature, 2)
-        temperature_f = round(((bme.temperature * 9 / 5) + 32), 2)
-        humid = round(bme.humidity, 2)
-        press = round(bme.pressure, 2)
-        gas = round(bme.gas / 1000, 2)
-        aqi = round((math.log(round(bme.gas / 1000, 2)) + 0.04 * round(bme.humidity, 2)), 2)
-        time.sleep_us(10)
-    temperature_str = str(temperature) + ' C'
-    temperature_f_str = str(temperature_f) + ' F'
-    humidity_str = str(humid) + ' %'
-    pressure_str = str(press) + ' hPa'
-    gas_str = str(gas) + ' KOhms'
-    aqi_str = str(aqi)
-    print(f'\nIncoming connection --> sending webpage')
-    print('Temperature:', temperature_str)
-    print('Humidity:', humidity_str)
-    print('Pressure:', pressure_str)
-    print('Gas:', gas_str)
-    print('AQI:', aqi_str)
-    print('-------\n')
-
-    # Record sensor readings at least every hour
-    if (now - csv_sample) > 3600:
-        print("Writing sensor values to csv...")
-        rows = [
-            date,
-            time_now,
-            temperature,
-            temperature_f,
-            humid,
-            press,
-            gas,
-            aqi
-        ]
-
-        # Check for existing stats.csv file, create a new one if not found
-        try:
-            f = open('stats.csv', 'r')
-        except OSError as e:
-            print(f'CSV may not exist: {e}')
-            print('Creating new csv...')
-            try:
-                with open('stats.csv', 'w') as f:
-                    for x in fieldnames:
-                        f.write(x)
-                        if x == fieldnames[-1]:
-                            f.write('\r\n')
-                        else:
-                            f.write(',')
-            except TypeError as e:
-                print(f'TypeError writing headers to csv: {e}')
-            except NameError as e:
-                print(e)
-        finally:
-            try:
-                f.close()
-            except OSError as e:
-                print(f'CSV may not exist: {e}')
-
-        # Append sensor readings to csv
-        try:
-            with open('stats.csv', 'a') as f:
-                for x in rows:
-                    f.write(str(x))
-                    if x == rows[-1]:
-                        f.write('\r\n')
-                    else:
-                        f.write(',')
-            csv_sample = now
-            print("Done.")
-        except TypeError as e:
-            print(f'TypeError appending to csv: {e}')
-        except NameError as e:
-            print(f'NameError appending to csv: {e}')
-
-    # Set min/max
-    if temperature_f < min_temp:  # min
-        min_temp = temperature_f
-    if humid < min_humid:
-        min_humid = humid
-    if press < min_press:
-        min_press = press
-    if gas < min_gas:
-        min_gas = gas
-    if aqi < min_aqi:
-        min_aqi = aqi
-    if temperature_f > max_temp:  # max
-        max_temp = temperature_f
-    if humid > max_humid:
-        max_humid = humid
-    if press > max_press:
-        max_press = press
-    if gas > max_gas:
-        max_gas = gas
-    if aqi > max_aqi:
-        max_aqi = aqi
-
     if not get_media_req:
+        # Update sensor readings
+        for x in range(1):  # Warm up sensor before reporting readings
+            temperature = round(bme.temperature, 2)
+            temperature_f = round(((bme.temperature * 9 / 5) + 32), 2)
+            humid = round(bme.humidity, 2)
+            press = round(bme.pressure, 2)
+            gas = round(bme.gas / 1000, 2)
+            aqi = round((math.log(round(bme.gas / 1000, 2)) + 0.04 * round(bme.humidity, 2)), 2)
+            time.sleep_us(1)
+        temperature_str = str(temperature) + ' C'
+        temperature_f_str = str(temperature_f) + ' F'
+        humidity_str = str(humid) + ' %'
+        pressure_str = str(press) + ' hPa'
+        gas_str = str(gas) + ' KOhms'
+        aqi_str = str(aqi)
+        print(f'\nIncoming connection --> sending webpage')
+        print('Temperature:', temperature_str)
+        print('Humidity:', humidity_str)
+        print('Pressure:', pressure_str)
+        print('Gas:', gas_str)
+        print('AQI:', aqi_str)
+        print('-------\n')
+
+        # Set min/max
+        if temperature_f < min_temp:  # min
+            min_temp = temperature_f
+        if humid < min_humid:
+            min_humid = humid
+        if press < min_press:
+            min_press = press
+        if gas < min_gas:
+            min_gas = gas
+        if aqi < min_aqi:
+            min_aqi = aqi
+        if temperature_f > max_temp:  # max
+            max_temp = temperature_f
+        if humid > max_humid:
+            max_humid = humid
+        if press > max_press:
+            max_press = press
+        if gas > max_gas:
+            max_gas = gas
+        if aqi > max_aqi:
+            max_aqi = aqi
+
         download_token = now  # Refresh download token to avoid stale download cache
 
         response =  '<!DOCTYPE HTML>'+'\r\n'
@@ -338,5 +363,7 @@ while True:
     recv_buf = ''   # Reset buffer
     response = ''   # Reset response
     request  = ''   # Reset request
+    cl   = ''
+    addr = ''
     time.sleep_ms(1)
     print('\nListening for connections...\n')
