@@ -153,7 +153,7 @@ while True:
             if (now - csv_sample) > 3600:
                 # Update current date and time
                 year, month, mday, hour, minute, second, weekday, yearday = time.localtime()
-                date = f'{mday}-{month}-{year}'
+                date = f'{month}/{mday}/{year}'
                 time_now = f'{hour}:{minute}:{second}'
                 runtime = seconds_to_time((now - start_timestamp))
 
