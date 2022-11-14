@@ -132,16 +132,26 @@ s.listen(3)
 
 led.off()
 
-# TEST
 poller = select.poll()
 poller.register(s, select.POLLIN)
+
+for x in range(5):  # Warm up sensor before reporting readings
+    led.on()
+    temperature = round(bme.temperature, 2)
+    temperature_f = round(((bme.temperature * 9 / 5) + 32), 2)
+    humid = round(bme.humidity, 2)
+    press = round(bme.pressure, 2)
+    gas = round(bme.gas / 1000, 2)
+    aqi = round((math.log(round(bme.gas / 1000, 2)) + 0.04 * round(bme.humidity, 2)), 2)
+    led.off()
+    time.sleep_us(10)
 
 # Networking initialized, start listening for connections
 print('Listening for connections...')
 while True:
     # Poll for new connection request
     try:
-        evts = poller.poll(1000)  # Poll for 7 min (420000ms)
+        evts = poller.poll(1000)  # Poll for 1 sec (1000ms)
         for sock, evt in evts:
             if evt and select.POLLIN:
                     led.on()
@@ -150,7 +160,7 @@ while True:
                     recv_buf = cl_file.readline()
         if len(evts) < 1:   # No connection request
             now = time.mktime(time.localtime())
-            if (now - csv_sample) > 3600:
+            if (now - csv_sample) > 1800:   # Update CSV every 30min (1800 sec)
                 # Update current date and time
                 year, month, mday, hour, minute, second, weekday, yearday = time.localtime()
                 date = f'{month}/{mday}/{year}'
