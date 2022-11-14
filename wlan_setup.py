@@ -11,7 +11,7 @@ def connect():
     if not wlan.active():
         wlan.active(True)
     if network.WLAN().status() is not network.STAT_GOT_IP:
-        with open("wifi_info.txt", 'r') as f:
+        with open("wifi_info.txt", 'r') as f:   # WLAN cred format: SSID\nPW
             wifi_info = f.readlines()
         ssid = wifi_info[0].strip()
         password = wifi_info[1].strip()

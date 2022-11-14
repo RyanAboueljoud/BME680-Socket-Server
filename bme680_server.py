@@ -39,8 +39,9 @@ max_aqi     = -1.0
 
 
 # Check string for whole word using space as delimiter 
-def contains_word(st, wd):
-    return (b' ' + wd + b' ') in (b' ' + st + b' ')
+def contains_word(st, wd, sep=' '):
+    sep = sep.encode('ascii')  # Convert str to bytes
+    return (sep + wd + sep) in (sep + st + sep)
 
 
 # Function convert second into day
@@ -274,6 +275,8 @@ while True:
 
         download_token = now  # Refresh download token to avoid stale download cache
 
+        # Move this html response to index.html
+        # and use str.replace() to fill in each variable {VAR}
         response =  '<!DOCTYPE HTML>'+'\r\n'
         response += '<html><head>'+'\r\n'
         response += '<title>Plant Tent</title>'+'\r\n'
@@ -351,6 +354,8 @@ while True:
                     print(f'No csv found: {e}')
                 response += '\r\n\r\n'
             elif contains_word(request, '/delete.html'):
+                response = response.decode('utf-8')
+                response = response.replace('{REDIRECT_URL}', wlan_setup.getIp()).encode('ascii')
                 print('Removing stats.csv')
                 try:
                     uos.remove('stats.csv')
